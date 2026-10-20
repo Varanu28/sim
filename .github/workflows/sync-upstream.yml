@@ -12,15 +12,29 @@ concurrency:
   group: sync-upstream-sim
   cancel-in-progress: true
 
+# Requires a repository secret SYNC_TOKEN: a fine-grained personal access token for
+# this repository with "Contents: Read and write" and "Workflows: Read and write".
+# GitHub never lets the built-in GITHUB_TOKEN push commits that touch
+# .github/workflows/, and upstream changes those files regularly.
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
+      - name: Require SYNC_TOKEN
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          if [ -z "$SYNC_TOKEN" ]; then
+            echo "::error::SYNC_TOKEN secret is not set. Add a fine-grained PAT with Contents + Workflows read/write (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+
       - name: Checkout fork
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.SYNC_TOKEN }}
 
       - name: Configure Git
         run: |
@@ -32,8 +46,13 @@ jobs:
           git remote add upstream https://github.com/simstudioai/sim.git || git remote set-url upstream https://github.com/simstudioai/sim.git
           git fetch upstream main --prune
 
-      - name: Fast-forward main from upstream
+      # main carries fork-only commits (this workflow), so a fast-forward is impossible.
+      # Merge upstream in instead; this file does not exist upstream, so it never conflicts.
+      - name: Merge upstream main
         run: |
-          git checkout main
-          git merge --ff-only upstream/main
-          git push origin main
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "Already up to date with upstream."
+            exit 0
+          fi
+          git merge --no-edit upstream/main -m "chore: sync upstream simstudioai/sim main"
+          git push origin HEAD:main
